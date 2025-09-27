@@ -1,0 +1,31 @@
+# Virtual Environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDEs
+.idea/
+.vscode/
+
+# Claude
+.claude/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and databases
+*.log
+*.db
+*.sqlite3
+
+# Other
+*.swp
+*.swo
+*~
+local_settings.py
