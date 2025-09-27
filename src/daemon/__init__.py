@@ -1,0 +1,1 @@
+"""Background service for wallpaper downloading and AI generation."""

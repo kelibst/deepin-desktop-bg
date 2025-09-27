@@ -1,0 +1,22 @@
+# Core Dependencies
+PySide6>=6.4.0          # Qt bindings for UI
+requests>=2.28.0        # HTTP client for APIs
+Pillow>=9.0.0           # Image processing and validation
+click>=8.0.0            # CLI interface (optional)
+
+# Traditional Source APIs
+praw>=7.6.0             # Reddit API wrapper
+
+# AI Generation Dependencies
+openai>=1.0.0           # For Monica AI integration (if needed)
+apify-client>=1.0.0     # For Craiyon API access
+
+# Optional: Local Stable Diffusion (heavy dependencies)
+# diffusers>=0.21.0       # For Stable Diffusion
+# torch>=2.0.0            # For local Stable Diffusion
+# transformers>=4.21.0    # For Stable Diffusion
+
+# Development Dependencies
+pytest>=7.0.0           # Testing framework
+flake8>=5.0.0           # Code linting
+mypy>=1.0.0             # Type checking

@@ -1,0 +1,1 @@
+"""Traditional wallpaper downloaders (WallpaperHub, Reddit, Wikimedia, NASA)."""

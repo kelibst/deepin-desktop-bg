@@ -1,0 +1,1 @@
+"""AI wallpaper generators (Monica AI, Craiyon, Stable Diffusion)."""
