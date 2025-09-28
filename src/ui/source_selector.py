@@ -160,9 +160,13 @@ class WallpaperSourceSelector(QMainWindow):
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
+        # Connect tab change signal for auto-refresh
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+
         # Add tabs
         self.create_ai_generation_tab()
         self.create_curated_sources_tab()
+        self.create_downloaded_images_tab()
         self.create_settings_tab()
 
         # Add status area
@@ -343,6 +347,48 @@ class WallpaperSourceSelector(QMainWindow):
 
         layout.addStretch()
         self.tab_widget.addTab(tab, "Curated Sources")
+
+    def create_downloaded_images_tab(self):
+        """Create the downloaded images management tab."""
+        try:
+            from ui.downloaded_gallery import DownloadedWallpaperGallery
+
+            # Create the downloaded gallery widget
+            self.downloaded_gallery = DownloadedWallpaperGallery()
+
+            # Connect signals
+            self.downloaded_gallery.wallpaper_deleted.connect(self.on_wallpaper_deleted)
+            self.downloaded_gallery.background_set.connect(self.on_background_set)
+            self.downloaded_gallery.selection_changed.connect(self.on_downloaded_selection_changed)
+
+            # Add as tab
+            self.tab_widget.addTab(self.downloaded_gallery, "Downloaded Images")
+
+        except ImportError as e:
+            logger.error(f"Failed to import DownloadedWallpaperGallery: {e}")
+            # Create fallback tab
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+
+            error_label = QLabel("Downloaded Images feature is not available.")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: #f44336; font-size: 14px; padding: 50px;")
+            layout.addWidget(error_label)
+
+            self.tab_widget.addTab(tab, "Downloaded Images")
+
+        except Exception as e:
+            logger.error(f"Failed to create downloaded images tab: {e}")
+            # Create error tab
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+
+            error_label = QLabel(f"Error loading Downloaded Images: {str(e)}")
+            error_label.setAlignment(Qt.AlignCenter)
+            error_label.setStyleSheet("color: #f44336; font-size: 12px; padding: 50px;")
+            layout.addWidget(error_label)
+
+            self.tab_widget.addTab(tab, "Downloaded Images")
 
     def create_settings_tab(self):
         """Create the settings tab."""
@@ -531,6 +577,8 @@ class WallpaperSourceSelector(QMainWindow):
     def on_wallpaper_downloaded(self, file_path: str):
         """Handle wallpaper download from gallery."""
         self.refresh_statistics()
+        # Refresh the downloaded gallery when wallpapers are downloaded from Wallhaven
+        self.refresh_downloaded_gallery()
         logger.info(f"Wallpaper downloaded from gallery: {file_path}")
 
     def on_background_changed(self, wallpaper_id: str):
@@ -574,6 +622,10 @@ class WallpaperSourceSelector(QMainWindow):
                 f"Downloaded {count} wallpaper(s) to your wallpaper folder.\\n\\n"
                 "Configure Deepin to use the wallpaper folder for automatic rotation."
             )
+
+            # Refresh the downloaded gallery if it exists
+            self.refresh_downloaded_gallery()
+
         else:
             self.status_label.setText("No wallpapers were downloaded")
             QMessageBox.warning(self, "Warning", "No wallpapers were downloaded. Please check your settings.")
@@ -615,6 +667,61 @@ By Source:
             self.stats_label.setText(stats_text)
         except Exception as e:
             self.stats_label.setText(f"Error loading statistics: {e}")
+
+    def refresh_downloaded_gallery(self):
+        """Refresh the downloaded images gallery if it exists and is visible."""
+        try:
+            if hasattr(self, 'downloaded_gallery') and self.downloaded_gallery:
+                # Check if Downloaded Images tab is currently visible
+                current_tab_index = self.tab_widget.currentIndex()
+                downloaded_tab_index = self.tab_widget.indexOf(self.downloaded_gallery)
+
+                if downloaded_tab_index >= 0:
+                    logger.info("Refreshing downloaded gallery after new wallpaper download")
+                    self.downloaded_gallery.refresh_wallpapers()
+
+                    # If the user is currently viewing the Downloaded Images tab, show immediate feedback
+                    if current_tab_index == downloaded_tab_index:
+                        self.downloaded_gallery.status_message.setText("Gallery updated with new wallpapers")
+
+        except Exception as e:
+            logger.error(f"Failed to refresh downloaded gallery: {e}")
+
+    def on_wallpaper_deleted(self, wallpaper_id: str):
+        """Handle wallpaper deletion from downloaded gallery."""
+        # Refresh statistics when wallpapers are deleted
+        self.refresh_statistics()
+        logger.info(f"Wallpaper deleted: {wallpaper_id}")
+
+    def on_background_set(self, wallpaper_path: str):
+        """Handle background change from downloaded gallery."""
+        from pathlib import Path
+        self.status_label.setText(f"Background set to: {Path(wallpaper_path).name}")
+        logger.info(f"Background set to: {wallpaper_path}")
+
+    def on_downloaded_selection_changed(self, selected_count: int):
+        """Handle selection change in downloaded gallery."""
+        if selected_count > 0:
+            logger.debug(f"Selected {selected_count} wallpaper(s) in downloaded gallery")
+
+    def on_tab_changed(self, index: int):
+        """Handle tab change to refresh gallery when user switches to Downloaded Images."""
+        try:
+            if hasattr(self, 'downloaded_gallery') and self.downloaded_gallery:
+                downloaded_tab_index = self.tab_widget.indexOf(self.downloaded_gallery)
+
+                # If user switched to Downloaded Images tab, refresh it
+                if index == downloaded_tab_index and downloaded_tab_index >= 0:
+                    logger.debug("User switched to Downloaded Images tab, refreshing gallery")
+                    self.downloaded_gallery.refresh_wallpapers()
+
+                    # Update status to show it's been refreshed
+                    import time
+                    current_time = time.strftime("%H:%M:%S")
+                    self.downloaded_gallery.status_message.setText(f"Gallery refreshed at {current_time}")
+
+        except Exception as e:
+            logger.error(f"Error handling tab change: {e}")
 
     def cleanup_old_wallpapers(self):
         """Clean up old wallpapers."""

@@ -89,35 +89,35 @@ class WallpaperDownloadWorker(QThread):
                 wallpaper_id = wallpaper_data['id']
                 self.progress_update.emit(f"Processing {wallpaper_id} ({i+1}/{total})...")
 
-                # Check for existing wallpaper before download
-                existing_wallpapers = self.image_manager.list_wallpapers('wallhaven')
-                is_duplicate = False
-
-                for existing in existing_wallpapers:
-                    existing_metadata = existing.get('metadata', {})
-                    if existing_metadata.get('wallpaper_id') == wallpaper_id:
-                        self.download_skipped.emit(wallpaper_data, "Already in collection")
-                        is_duplicate = True
-                        skipped_count += 1
-                        break
+                # Check for existing wallpaper before download using improved method
+                existing_file = self.image_manager.find_wallpaper_by_id(wallpaper_id, 'wallhaven')
+                if existing_file:
+                    self.download_skipped.emit(wallpaper_data, "Already in collection")
+                    is_duplicate = True
+                    skipped_count += 1
+                else:
+                    is_duplicate = False
 
                 if not is_duplicate:
-                    # Download wallpaper
-                    file_path = self.client.download_wallpaper(wallpaper_data, check_duplicates=False)
+                    # Download wallpaper to temporary location
+                    import tempfile
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_path = Path(temp_dir)
+                        file_path = self.client.download_wallpaper(wallpaper_data, save_path=temp_path, check_duplicates=False)
 
-                    if file_path:
-                        # Store in organized directory
-                        stored_path = self.image_manager.store_wallpaper(
-                            file_path, 'wallhaven',
-                            metadata={'source': 'wallhaven', 'wallpaper_id': wallpaper_id}
-                        )
+                        if file_path:
+                            # Store in organized directory via image manager (single storage)
+                            stored_path = self.image_manager.store_wallpaper(
+                                file_path, 'wallhaven',
+                                metadata={'source': 'wallhaven', 'wallpaper_id': wallpaper_id}
+                            )
 
-                        if stored_path:
-                            self.download_finished.emit(wallpaper_data, str(stored_path))
+                            if stored_path:
+                                self.download_finished.emit(wallpaper_data, str(stored_path))
+                            else:
+                                self.download_error.emit(wallpaper_data, "Failed to store wallpaper")
                         else:
-                            self.download_error.emit(wallpaper_data, "Failed to store wallpaper")
-                    else:
-                        self.download_error.emit(wallpaper_data, "Failed to download wallpaper")
+                            self.download_error.emit(wallpaper_data, "Failed to download wallpaper")
 
             except Exception as e:
                 logger.error(f"Download failed for {wallpaper_data['id']}: {e}")
@@ -509,21 +509,13 @@ class WallhavenGallery(QWidget):
         # Calculate grid dimensions
         cards_per_row = max(1, self.scroll_area.width() // 260)  # Card width + margin
 
-        # Get existing wallpapers for duplicate checking
-        existing_wallpapers = self.image_manager.list_wallpapers('wallhaven')
-        existing_ids = set()
-        for existing in existing_wallpapers:
-            existing_metadata = existing.get('metadata', {})
-            wallpaper_id = existing_metadata.get('wallpaper_id')
-            if wallpaper_id:
-                existing_ids.add(wallpaper_id)
-
         # Create wallpaper cards
         for i, wallpaper_data in enumerate(wallpapers):
             card = WallpaperCard(wallpaper_data, self.image_loader)
 
-            # Check if already downloaded and mark accordingly
-            if wallpaper_data['id'] in existing_ids:
+            # Check if already downloaded using improved method
+            existing_file = self.image_manager.find_wallpaper_by_id(wallpaper_data['id'], 'wallhaven')
+            if existing_file:
                 card.set_already_downloaded(True)
 
             # Connect card signals
@@ -619,30 +611,58 @@ class WallhavenGallery(QWidget):
         """Handle set background request."""
         wallpaper_id = wallpaper_data['id']
 
-        # First, download the wallpaper if not already downloaded
         try:
-            file_path = self.client.download_wallpaper(wallpaper_data)
+            # First check if wallpaper is already downloaded using improved method
+            existing_file_path = self.image_manager.find_wallpaper_by_id(wallpaper_id, 'wallhaven')
 
-            if file_path:
-                # Set as background
-                success = self.background_manager.set_background(file_path)
+            if existing_file_path:
+                # Use existing file
+                file_path = existing_file_path
+                self.update_status(f"Using existing wallpaper {wallpaper_id}")
+            else:
+                # Download to temporary location and store via image manager
+                import tempfile
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_path = Path(temp_dir)
+                    downloaded_path = self.client.download_wallpaper(wallpaper_data, save_path=temp_path, check_duplicates=False)
 
-                if success:
-                    self.update_status(f"Set wallpaper {wallpaper_id} as background")
-                    self.background_changed.emit(wallpaper_id)
-                    QMessageBox.information(
-                        self, "Success",
-                        f"Wallpaper {wallpaper_id} has been set as your desktop background!"
-                    )
-                else:
-                    QMessageBox.warning(
-                        self, "Background Setting Failed",
-                        "Failed to set wallpaper as background. Please check system permissions."
-                    )
+                    if downloaded_path:
+                        # Store in organized directory
+                        stored_path = self.image_manager.store_wallpaper(
+                            downloaded_path, 'wallhaven',
+                            metadata={'source': 'wallhaven', 'wallpaper_id': wallpaper_id}
+                        )
+
+                        if stored_path:
+                            file_path = stored_path
+                            self.update_status(f"Downloaded wallpaper {wallpaper_id}")
+                        else:
+                            QMessageBox.warning(
+                                self, "Storage Failed",
+                                f"Failed to store wallpaper {wallpaper_id}."
+                            )
+                            return
+                    else:
+                        QMessageBox.warning(
+                            self, "Download Failed",
+                            f"Failed to download wallpaper {wallpaper_id}."
+                        )
+                        return
+
+            # Set as background
+            success = self.background_manager.set_background(file_path)
+
+            if success:
+                self.update_status(f"Set wallpaper {wallpaper_id} as background")
+                self.background_changed.emit(wallpaper_id)
+                QMessageBox.information(
+                    self, "Success",
+                    f"Wallpaper {wallpaper_id} has been set as your desktop background!"
+                )
             else:
                 QMessageBox.warning(
-                    self, "Download Failed",
-                    f"Failed to download wallpaper {wallpaper_id}."
+                    self, "Background Setting Failed",
+                    "Failed to set wallpaper as background. Please check system permissions."
                 )
 
         except Exception as e:

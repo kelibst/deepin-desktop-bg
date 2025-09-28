@@ -55,6 +55,9 @@ pip install torch diffusers transformers
 
 ### 1. Launch the Application
 ```bash
+#activiate the environment
+source venv/bin/activate
+
 # Run the Qt GUI
 python test_app.py --gui
 

@@ -8,7 +8,7 @@ coordination between different wallpaper sources.
 import logging
 import hashlib
 import shutil
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Tuple
 from pathlib import Path
 from PIL import Image
 import json
@@ -119,6 +119,57 @@ class ImageManager:
 
         return image_hash in self.known_hashes
 
+    def find_duplicate(self, image_path: Path) -> Optional[Path]:
+        """
+        Find if an image is a duplicate and return the path to the existing file.
+
+        Args:
+            image_path: Path to the image file to check
+
+        Returns:
+            Path to existing duplicate file, or None if no duplicate found
+        """
+        image_hash = self.calculate_image_hash(image_path)
+        if image_hash is None:
+            return None
+
+        if image_hash not in self.known_hashes:
+            return None
+
+        # Find the wallpaper with matching hash
+        for wallpaper_info in self.metadata.get('wallpapers', {}).values():
+            if wallpaper_info.get('hash') == image_hash:
+                existing_path = Path(wallpaper_info['path'])
+                if existing_path.exists():
+                    return existing_path
+
+        return None
+
+    def find_wallpaper_by_id(self, wallpaper_id: str, source_type: Optional[str] = None) -> Optional[Path]:
+        """
+        Find a wallpaper by its ID in the metadata.
+
+        Args:
+            wallpaper_id: The wallpaper ID to search for
+            source_type: Optionally filter by source type
+
+        Returns:
+            Path to existing wallpaper file, or None if not found
+        """
+        for wallpaper_info in self.metadata.get('wallpapers', {}).values():
+            # Check source type if specified
+            if source_type and wallpaper_info.get('source_type') != source_type:
+                continue
+
+            # Check if wallpaper ID matches
+            metadata = wallpaper_info.get('metadata', {})
+            if metadata.get('wallpaper_id') == wallpaper_id:
+                existing_path = Path(wallpaper_info['path'])
+                if existing_path.exists():
+                    return existing_path
+
+        return None
+
     def validate_image(self, image_path: Path) -> bool:
         """
         Validate that an image file is valid and suitable for wallpapers.
@@ -185,10 +236,11 @@ class ImageManager:
             logger.warning(f"Image validation failed for: {source_path}")
             return None
 
-        # Check for duplicates
-        if self.is_duplicate(source_path):
-            logger.info(f"Duplicate image, skipping: {source_path}")
-            return None
+        # Check for duplicates and return existing path if found
+        existing_duplicate = self.find_duplicate(source_path)
+        if existing_duplicate:
+            logger.info(f"Duplicate image found, returning existing path: {existing_duplicate}")
+            return existing_duplicate
 
         # Determine target filename
         if target_name:
@@ -337,6 +389,307 @@ class ImageManager:
                     })
 
         return wallpapers
+
+    def get_wallpapers_with_thumbnails(self, source_type: Optional[str] = None) -> List[Dict]:
+        """
+        Get stored wallpapers with additional thumbnail and display information.
+
+        Args:
+            source_type: Filter by source type, or None for all
+
+        Returns:
+            List of wallpaper dictionaries with thumbnail info
+        """
+        wallpapers = []
+
+        for wallpaper_id, wallpaper_info in self.metadata.get('wallpapers', {}).items():
+            if source_type is None or wallpaper_info.get('source_type') == source_type:
+                wallpaper_path = Path(wallpaper_info['path'])
+                if wallpaper_path.exists():
+                    # Get image dimensions and file size
+                    try:
+                        with Image.open(wallpaper_path) as img:
+                            width, height = img.size
+                            resolution = f"{width}x{height}"
+                            file_size = wallpaper_path.stat().st_size
+                    except Exception as e:
+                        logger.warning(f"Failed to get image info for {wallpaper_path}: {e}")
+                        resolution = "Unknown"
+                        file_size = 0
+
+                    # Create display data compatible with wallpaper cards
+                    display_data = {
+                        'id': wallpaper_id,
+                        'path': wallpaper_path,
+                        'resolution': resolution,
+                        'file_size': file_size,
+                        'source_type': wallpaper_info.get('source_type', 'unknown'),
+                        'added_date': wallpaper_info.get('added_date', ''),
+                        'metadata': wallpaper_info.get('metadata', {}),
+
+                        # For display compatibility
+                        'views': wallpaper_info.get('metadata', {}).get('views', 0),
+                        'favorites': wallpaper_info.get('metadata', {}).get('favorites', 0),
+                        'category': wallpaper_info.get('metadata', {}).get('category', 'local'),
+                        'tags': wallpaper_info.get('metadata', {}).get('tags', []),
+                        'created_at': wallpaper_info.get('added_date', ''),
+
+                        # Thumbnail placeholder - will be handled by thumbnail generator
+                        'thumbs': {
+                            'large': str(wallpaper_path)  # Use full path for local files
+                        }
+                    }
+
+                    wallpapers.append(display_data)
+
+        # Sort by added date (newest first)
+        wallpapers.sort(key=lambda x: x.get('added_date', ''), reverse=True)
+        return wallpapers
+
+    def delete_wallpaper(self, wallpaper_id: str) -> bool:
+        """
+        Delete a wallpaper from storage and metadata.
+
+        Args:
+            wallpaper_id: ID of the wallpaper to delete
+
+        Returns:
+            True if successfully deleted, False otherwise
+        """
+        if wallpaper_id not in self.metadata.get('wallpapers', {}):
+            logger.warning(f"Wallpaper not found in metadata: {wallpaper_id}")
+            return False
+
+        wallpaper_info = self.metadata['wallpapers'][wallpaper_id]
+        wallpaper_path = Path(wallpaper_info['path'])
+
+        try:
+            # Remove the file if it exists
+            if wallpaper_path.exists():
+                wallpaper_path.unlink()
+                logger.info(f"Deleted wallpaper file: {wallpaper_path}")
+
+            # Remove hash from known hashes
+            if 'hash' in wallpaper_info:
+                self.known_hashes.discard(wallpaper_info['hash'])
+
+            # Remove from metadata
+            del self.metadata['wallpapers'][wallpaper_id]
+
+            # Update stats
+            source_type = wallpaper_info.get('source_type', 'unknown')
+            if source_type in self.metadata['stats']['by_source']:
+                self.metadata['stats']['by_source'][source_type] = max(
+                    0, self.metadata['stats']['by_source'][source_type] - 1
+                )
+
+            # Save updated metadata
+            self.save_metadata()
+
+            logger.info(f"Successfully deleted wallpaper: {wallpaper_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete wallpaper {wallpaper_id}: {e}")
+            return False
+
+    def delete_multiple_wallpapers(self, wallpaper_ids: List[str]) -> Tuple[int, int]:
+        """
+        Delete multiple wallpapers.
+
+        Args:
+            wallpaper_ids: List of wallpaper IDs to delete
+
+        Returns:
+            Tuple of (successful_deletions, total_requested)
+        """
+        successful = 0
+        total = len(wallpaper_ids)
+
+        for wallpaper_id in wallpaper_ids:
+            if self.delete_wallpaper(wallpaper_id):
+                successful += 1
+
+        logger.info(f"Deleted {successful}/{total} wallpapers")
+        return successful, total
+
+    def get_wallpaper_info(self, wallpaper_id: str) -> Optional[Dict]:
+        """
+        Get detailed information about a specific wallpaper.
+
+        Args:
+            wallpaper_id: ID of the wallpaper
+
+        Returns:
+            Wallpaper info dictionary or None if not found
+        """
+        if wallpaper_id not in self.metadata.get('wallpapers', {}):
+            return None
+
+        wallpaper_info = self.metadata['wallpapers'][wallpaper_id].copy()
+        wallpaper_path = Path(wallpaper_info['path'])
+
+        if not wallpaper_path.exists():
+            logger.warning(f"Wallpaper file no longer exists: {wallpaper_path}")
+            return None
+
+        # Add current file system info
+        try:
+            stat_info = wallpaper_path.stat()
+            wallpaper_info['current_size'] = stat_info.st_size
+            wallpaper_info['current_mtime'] = stat_info.st_mtime
+
+            # Get image dimensions
+            with Image.open(wallpaper_path) as img:
+                wallpaper_info['dimensions'] = img.size
+                wallpaper_info['mode'] = img.mode
+                wallpaper_info['format'] = img.format
+
+        except Exception as e:
+            logger.warning(f"Failed to get current file info for {wallpaper_path}: {e}")
+
+        return wallpaper_info
+
+    def search_wallpapers(self, query: str, source_type: Optional[str] = None) -> List[Dict]:
+        """
+        Search wallpapers by filename, metadata, or tags.
+
+        Args:
+            query: Search query string
+            source_type: Optional source type filter
+
+        Returns:
+            List of matching wallpaper dictionaries
+        """
+        query_lower = query.lower()
+        results = []
+
+        for wallpaper_id, wallpaper_info in self.metadata.get('wallpapers', {}).items():
+            if source_type and wallpaper_info.get('source_type') != source_type:
+                continue
+
+            wallpaper_path = Path(wallpaper_info['path'])
+            if not wallpaper_path.exists():
+                continue
+
+            # Search in filename
+            if query_lower in wallpaper_path.name.lower():
+                results.append({
+                    'id': wallpaper_id,
+                    'path': wallpaper_path,
+                    **wallpaper_info
+                })
+                continue
+
+            # Search in metadata
+            metadata = wallpaper_info.get('metadata', {})
+
+            # Search in tags
+            tags = metadata.get('tags', [])
+            if any(query_lower in tag.lower() for tag in tags):
+                results.append({
+                    'id': wallpaper_id,
+                    'path': wallpaper_path,
+                    **wallpaper_info
+                })
+                continue
+
+            # Search in category
+            category = metadata.get('category', '')
+            if query_lower in category.lower():
+                results.append({
+                    'id': wallpaper_id,
+                    'path': wallpaper_path,
+                    **wallpaper_info
+                })
+                continue
+
+            # Search in prompt (for AI-generated images)
+            prompt = metadata.get('prompt', '')
+            if query_lower in prompt.lower():
+                results.append({
+                    'id': wallpaper_id,
+                    'path': wallpaper_path,
+                    **wallpaper_info
+                })
+
+        return results
+
+    def get_source_type_stats(self) -> Dict[str, Dict]:
+        """
+        Get detailed statistics for each source type.
+
+        Returns:
+            Dictionary with stats for each source type
+        """
+        stats = {}
+
+        for source_type, directory in self.directories.items():
+            wallpapers = self.list_wallpapers(source_type)
+            total_size = 0
+
+            for wallpaper in wallpapers:
+                try:
+                    total_size += wallpaper['path'].stat().st_size
+                except OSError:
+                    pass
+
+            stats[source_type] = {
+                'count': len(wallpapers),
+                'size_mb': round(total_size / (1024 * 1024), 2),
+                'directory': str(directory)
+            }
+
+        return stats
+
+    def export_wallpaper_list(self, output_path: Path, format: str = 'json') -> bool:
+        """
+        Export wallpaper list to a file.
+
+        Args:
+            output_path: Path to output file
+            format: Export format ('json' or 'csv')
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            wallpapers = self.get_wallpapers_with_thumbnails()
+
+            if format.lower() == 'json':
+                # Convert Path objects to strings for JSON serialization
+                export_data = []
+                for wallpaper in wallpapers:
+                    wallpaper_copy = wallpaper.copy()
+                    wallpaper_copy['path'] = str(wallpaper_copy['path'])
+                    export_data.append(wallpaper_copy)
+
+                with open(output_path, 'w') as f:
+                    json.dump(export_data, f, indent=2, default=str)
+
+            elif format.lower() == 'csv':
+                import csv
+
+                if wallpapers:
+                    with open(output_path, 'w', newline='') as f:
+                        fieldnames = ['id', 'path', 'source_type', 'resolution', 'file_size', 'added_date']
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+
+                        for wallpaper in wallpapers:
+                            row = {key: wallpaper.get(key, '') for key in fieldnames}
+                            row['path'] = str(row['path'])
+                            writer.writerow(row)
+            else:
+                logger.error(f"Unsupported export format: {format}")
+                return False
+
+            logger.info(f"Exported {len(wallpapers)} wallpapers to {output_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to export wallpaper list: {e}")
+            return False
 
 
 # Example usage
